@@ -6,15 +6,29 @@ const { parse } = require('csv-parse/sync');
 
 const MESSAGE_TEMPLATE =
     process.env.MESSAGE_TEMPLATE ||
-    "Hi {name}, I wanted to reach out and see if there's a fit — would you be open to a quick chat?";
+    "Hi {name}, I came across your business and wanted to reach out — would you be open to a quick chat?";
 const DELAY_MS = parseInt(process.env.DELAY_MS ?? '3000', 10);
+const NAME_COL = process.env.NAME_COLUMN || 'name';
+const PHONE_COL = process.env.PHONE_COLUMN || 'phone';
+const COUNTRY_CODE = (process.env.COUNTRY_CODE || '').replace(/\D/g, '');
 
 function buildMessage(name) {
     return MESSAGE_TEMPLATE.replace(/\{name\}/g, name);
 }
 
 function formatPhone(raw) {
-    const digits = raw.replace(/\D/g, '');
+    let digits = raw.replace(/\D/g, '');
+
+    // Already has full country code (e.g. +2348... or 2348...)
+    if (COUNTRY_CODE && digits.startsWith(COUNTRY_CODE) && digits.length > COUNTRY_CODE.length + 6) {
+        return `${digits}@c.us`;
+    }
+
+    // Local format starting with 0 — replace leading 0 with country code
+    if (COUNTRY_CODE && digits.startsWith('0')) {
+        digits = COUNTRY_CODE + digits.slice(1);
+    }
+
     return `${digits}@c.us`;
 }
 
@@ -24,13 +38,21 @@ async function sleep(ms) {
 
 async function sendToLeads(client, leads) {
     const results = [];
+    let skipped = 0;
 
     for (const lead of leads) {
-        const name = (lead.name || '').trim();
-        const phone = (lead.phone || '').trim();
+        const name = (lead[NAME_COL] || '').trim();
+        const phone = (lead[PHONE_COL] || '').trim();
 
-        if (!name || !phone) {
-            console.warn(`Skipping row — missing name or phone: ${JSON.stringify(lead)}`);
+        if (!phone) {
+            console.warn(`[skip]   ${name || '(unnamed)'} — no phone number`);
+            skipped++;
+            continue;
+        }
+
+        if (!name) {
+            console.warn(`[skip]   ${phone} — no name`);
+            skipped++;
             continue;
         }
 
@@ -49,7 +71,7 @@ async function sendToLeads(client, leads) {
         if (DELAY_MS > 0) await sleep(DELAY_MS);
     }
 
-    return results;
+    return { results, skipped };
 }
 
 async function main() {
@@ -72,20 +94,28 @@ async function main() {
     });
 
     if (leads.length === 0) {
-        console.error('No leads found in CSV.');
+        console.error('No rows found in CSV.');
         process.exit(1);
     }
 
     const sample = leads[0];
-    if (!('name' in sample) || !('phone' in sample)) {
-        console.error('CSV must have "name" and "phone" column headers.');
+    if (!(NAME_COL in sample)) {
+        console.error(`Column "${NAME_COL}" not found. Available columns: ${Object.keys(sample).join(', ')}`);
+        console.error('Set NAME_COLUMN in .env to match your CSV header.');
+        process.exit(1);
+    }
+    if (!(PHONE_COL in sample)) {
+        console.error(`Column "${PHONE_COL}" not found. Available columns: ${Object.keys(sample).join(', ')}`);
+        console.error('Set PHONE_COLUMN in .env to match your CSV header.');
         process.exit(1);
     }
 
-    console.log(`Loaded ${leads.length} lead(s) from ${csvPath}`);
-    console.log(`Template: "${MESSAGE_TEMPLATE}"`);
-    console.log(`Delay between messages: ${DELAY_MS}ms\n`);
-    console.log('Starting WhatsApp client — scan the QR code when it appears...\n');
+    const withPhone = leads.filter((r) => (r[PHONE_COL] || '').trim());
+    console.log(`Loaded ${leads.length} row(s) — ${withPhone.length} have a phone number`);
+    console.log(`Template : "${MESSAGE_TEMPLATE}"`);
+    console.log(`Delay    : ${DELAY_MS}ms between messages`);
+    console.log(`Country  : +${COUNTRY_CODE || '(none)'}\n`);
+    console.log('Starting WhatsApp — scan the QR code when it appears...\n');
 
     const client = new Client({
         authStrategy: new LocalAuth(),
@@ -96,7 +126,7 @@ async function main() {
 
     client.on('qr', (qr) => {
         qrcode.generate(qr, { small: true });
-        console.log('\nScan the QR code above with your WhatsApp app (Linked Devices).\n');
+        console.log('\nScan the QR code above with WhatsApp (Linked Devices > Link a Device).\n');
     });
 
     client.on('authenticated', () => console.log('Authenticated.\n'));
@@ -109,12 +139,12 @@ async function main() {
     client.on('ready', async () => {
         console.log('WhatsApp ready. Sending messages...\n');
 
-        const results = await sendToLeads(client, leads);
+        const { results, skipped } = await sendToLeads(client, leads);
 
         const sent = results.filter((r) => r.status === 'sent').length;
         const failed = results.filter((r) => r.status === 'failed').length;
 
-        console.log(`\nFinished — sent: ${sent}, failed: ${failed}`);
+        console.log(`\nDone — sent: ${sent}, failed: ${failed}, skipped (no phone): ${skipped}`);
 
         await client.destroy();
     });
