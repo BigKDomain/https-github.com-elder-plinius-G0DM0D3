@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-lead-messenger",
+  "version": "1.0.0",
+  "description": "Send personalized WhatsApp messages to leads from a CSV file",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
